@@ -302,3 +302,100 @@ class TestOptions(SimulatorTestCase):
         num_qubits = FakeMontreal().configuration().num_qubits
         backend = AerSimulator.from_backend(FakeMontreal(), method=method)
         self.assertGreaterEqual(backend.configuration().num_qubits, num_qubits)
+
+    def test_option_skip_key_order(self):
+        """Test parallel option"""
+        shots = 4000
+        method="matrix_product_state"
+        backend = self.backend(method=method)
+
+        n = 12
+
+        for checks in range(10):
+            circuit = QuantumCircuit(n)
+            circuit2 = QuantumCircuit(n, metadata={"skip_key_order": True})
+
+            for times in range(2):
+                for i in range(0, n, 2):
+                    circuit.unitary(random_unitary(4, seed=11), [i, i+1])
+                    circuit2.unitary(random_unitary(4, seed=11), [i, i+1])
+                for i in range(1, n-1):
+                    circuit.cx(0, i)
+                    circuit2.cx(0, i)
+
+            circuit.save_statevector('sv')
+            circuit2.save_statevector('sv')
+
+            result1 = backend.run(circuit, shots=shots).result()
+            sv_order = result1.data(0)['sv']
+
+            result2 = backend.run(circuit2, shots=shots).result()
+            sv_noorder = result2.data(0)['sv']
+
+            self.assertAlmostEqual(state_fidelity(sv_order, sv_noorder), 1)
+
+    def test_mps_parallel_ops(self):
+        """Test parallel option"""
+        shots = 4000
+        method="matrix_product_state"
+        backend = self.backend(method=method)
+
+        n = 12
+
+        for checks in range(10):
+            circuit = QuantumCircuit(n)
+            circuit2 = QuantumCircuit(n, metadata={"skip_key_order": True, "parallel_ops": True})
+
+            for times in range(2):
+                for i in range(0, n, 2):
+                    circuit.unitary(random_unitary(4, seed=11), [i, i+1])
+                    circuit2.unitary(random_unitary(4, seed=11), [i, i+1])
+                for i in range(1, n-1):
+                    circuit.cx(0, i)
+                    circuit2.cx(0, i)
+
+            circuit.save_statevector('sv')
+            circuit2.save_statevector('sv')
+
+            result1 = backend.run(circuit, shots=shots).result()
+            self.assertTrue("matrix_product_state_parallel_ops" not in result1._get_experiment().metadata)
+            sv_seq = result1.data(0)['sv']
+
+            result2 = backend.run(circuit2, shots=shots).result()
+            self.assertTrue("matrix_product_state_parallel_ops" in result2._get_experiment().metadata)
+            sv_par = result2.data(0)['sv']
+
+            self.assertAlmostEqual(state_fidelity(sv_seq, sv_par), 1)
+
+    def test_mps_only_parallel_ops(self):
+        """Test parallel option"""
+        shots = 4000
+        method="matrix_product_state"
+        backend = self.backend(method=method)
+
+        n = 12
+
+        for checks in range(10):
+            circuit = QuantumCircuit(n)
+            circuit2 = QuantumCircuit(n, metadata={"parallel_ops": True})
+
+            for times in range(2):
+                for i in range(0, n, 2):
+                    circuit.unitary(random_unitary(4, seed=11), [i, i+1])
+                    circuit2.unitary(random_unitary(4, seed=11), [i, i+1])
+                for i in range(1, n-1):
+                    circuit.cx(0, i)
+                    circuit2.cx(0, i)
+
+            circuit.save_statevector('sv')
+            circuit2.save_statevector('sv')
+
+            result1 = backend.run(circuit, shots=shots).result()
+            self.assertTrue("matrix_product_state_parallel_ops" not in result1._get_experiment().metadata)
+            sv_seq = result1.data(0)['sv']
+
+            result2 = backend.run(circuit2, shots=shots).result()
+            self.assertTrue("matrix_product_state_parallel_ops" in result2._get_experiment().metadata)
+            sv_par = result2.data(0)['sv']
+
+            self.assertAlmostEqual(state_fidelity(sv_seq, sv_par), 1)

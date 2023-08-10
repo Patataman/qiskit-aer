@@ -603,13 +603,15 @@ void MPS::apply_2_qubit_gate(uint_t index_A, uint_t index_B, Gates gate_type,
     high_qubit = index_A;
     swapped = true;
   }
-  if (mps_swap_direction_ == MPS_swap_direction::SWAP_LEFT) {
-    // Move high_qubit to be right after low_qubit
-    change_position(high_qubit, low_qubit + 1);
-  } else { // mps_swap_right
-    // Move low_qubit to be right before high_qubit
-    change_position(low_qubit, high_qubit - 1);
-    low_qubit = high_qubit - 1;
+  if (high_qubit - low_qubit > 1) {
+    if (mps_swap_direction_ == MPS_swap_direction::SWAP_LEFT) {
+      // Move high_qubit to be right after low_qubit
+      change_position(high_qubit, low_qubit + 1);
+    } else { // mps_swap_right
+      // Move low_qubit to be right before high_qubit
+      change_position(low_qubit, high_qubit - 1);
+      low_qubit = high_qubit - 1;
+    }
   }
   common_apply_2_qubit_gate(low_qubit, gate_type, mat, swapped, is_diagonal);
 }

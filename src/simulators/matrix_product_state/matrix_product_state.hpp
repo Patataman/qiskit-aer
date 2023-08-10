@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <sstream>
 #define _USE_MATH_DEFINES
+#define MAX_PARALLEL_OPS 4
 #include <math.h>
 
 #include "framework/json.hpp"
@@ -83,6 +84,7 @@ const Operations::OpSet StateOpSet(
 //=========================================================================
 
 using matrixproductstate_t = MPS;
+using OpItr = std::vector<Operations::Op>::const_iterator;
 
 class State : public QuantumState::State<matrixproductstate_t> {
 public:
@@ -100,6 +102,79 @@ public:
   virtual std::string name() const override { return "matrix_product_state"; }
 
   bool empty() const { return qreg_.empty(); }
+
+  // Iterate over the operations to apply and create subsets of first and last
+  // operation to execute in parallel
+  std::pair<OpItr, OpItr> identify_parallel_ops(const OpItr first, const OpItr last, bool &can_parallel) {
+
+    std::pair<OpItr, OpItr> parallel_ops;
+    OpItr tmp_first = first, tmp_last = first;
+    bool overlap = false;
+    uint_t q0, q1, t_q0, t_q1, aux0, aux1;
+
+    for (auto it = first+1; it != last; ++it) {
+      if (it->qubits.size() <= 2 and (it->type == OpType::matrix or it->type == OpType::gate)) {
+        if (it->qubits.size() == 1) {
+          q0 = qreg_.qubit_ordering_.location_[it->qubits[0]];
+        }
+        else {
+          aux0 = qreg_.qubit_ordering_.location_[it->qubits[0]];
+          aux1 = qreg_.qubit_ordering_.location_[it->qubits[1]];
+          q0 = std::min(aux0, aux1);
+          q1 = std::max(aux0, aux1);
+        }
+
+        // compare with previous operations to see if current is compatible
+        for (auto prev_it = it-1; prev_it >= tmp_first; --prev_it) {
+          if (prev_it->qubits.size() == 1) {
+              t_q0 = qreg_.qubit_ordering_.location_[prev_it->qubits[0]];
+              if (it->qubits.size() == 1 and t_q0 == q0) {
+                  overlap = true;
+                  break;
+              } else if (it->qubits.size() == 2 and (t_q0 <= q1 and t_q0 >= q0)) {
+                  overlap = true;
+                  break;
+              }
+          }
+          else if (prev_it->qubits.size() == 2) {
+            // qubits do not have to be ordered from lower to higher
+            aux0 = qreg_.qubit_ordering_.location_[prev_it->qubits[0]];
+            aux1 = qreg_.qubit_ordering_.location_[prev_it->qubits[1]];
+            t_q0 = std::min(aux0, aux1);
+            t_q1 = std::max(aux0, aux1);
+
+            // negate of (qubit0 > t_qubit1 || qubit1 < t_qubit0) == no overlap
+            if (it->qubits.size() == 1 and (q0 <= t_q1 and q0 >= t_q0)) {
+              // here qubits are always ordered pos0=lower, pos1=higher -> (0,4), (1,2), (1,1), etc.
+              overlap = true;
+              break;
+            } else if (it->qubits.size() == 2 and (q0 <= t_q1 and q1 >= t_q0)) {
+              overlap = true;
+              break;
+            }
+          }
+        }
+        if (overlap) {
+            break;
+        }
+        tmp_last = it;
+      } else {
+        break;
+      }
+    }
+    if (tmp_first != tmp_last) {
+      // if different, there must be parallel operations
+      can_parallel = true;
+      parallel_ops = std::pair<OpItr, OpItr>(tmp_first, tmp_last);
+    }
+
+    return parallel_ops;
+  }
+
+  virtual void apply_ops(const OpItr first, const OpItr last,
+                         ExperimentResult &result,
+                         RngEngine &rng,
+                         bool final_ops = false) override;
 
   // Apply an operation
   // If the op is not in allowed_ops an exeption will be raised.
@@ -387,6 +462,97 @@ void State::output_bond_dimensions(const Operations::Op &op) const {
   qreg_.print_bond_dimensions();
   instruction_number++;
 }
+
+/****
+ * Overwrite default apply_ops to take into account the parallel operations case
+****/
+void State::apply_ops(const OpItr first, const OpItr last,
+                          ExperimentResult &result, RngEngine &rng, bool final_ops) {
+
+  OpItr first_p_op, last_p_op;
+  std::pair<OpItr, OpItr> parallel_ops;
+  bool do_parallel = false, can_parallel = false;
+  std::unordered_map<std::string, OpItr> marks;
+  int num_parallel_ops, save;
+
+  if (getenv("QISKIT_MPS_PARALLEL_OPS")) {
+    result.metadata.add(true, "matrix_product_state_parallel_ops");
+    do_parallel = true;
+  }
+
+  // Simple loop over vector of input operations
+  for (auto it = first; it != last; ++it) {
+    switch (it->type) {
+      case Operations::OpType::mark: {
+        marks[it->string_params[0]] = it;
+        break;
+      }
+      case Operations::OpType::jump: {
+        if (creg().check_conditional(*it)) {
+          const auto& mark_name = it->string_params[0];
+          auto mark_it = marks.find(mark_name);
+          if (mark_it != marks.end()) {
+            it = mark_it->second;
+          } else {
+            for (++it; it != last; ++it) {
+              if (it->type == Operations::OpType::mark) {
+                marks[it->string_params[0]] = it;
+                if (it->string_params[0] == mark_name) {
+                  break;
+                }
+              }
+            }
+            if (it == last) {
+              std::stringstream msg;
+              msg << "Invalid jump destination:\"" << mark_name << "\"." << std::endl;
+              throw std::runtime_error(msg.str());
+            }
+          }
+        }
+        break;
+      }
+      default: {
+        // For each operation, evaluate if it, and next operations
+        // can be executed in parallel
+        if (do_parallel and it != last and qreg_.num_qubits() > 8) {
+          parallel_ops = identify_parallel_ops(it, last, can_parallel);
+          if (can_parallel) {  // it is easier than work with the pair
+            int th_num = 1;
+            can_parallel = false;
+            first_p_op = std::get<0>(parallel_ops);
+            last_p_op = std::get<1>(parallel_ops);
+
+            // Execute the following operations in parallel and update values
+            num_parallel_ops = (int)(last_p_op - first_p_op)+1;
+            if (num_parallel_ops >= 2) {
+                // Probably this will always be 2 or 1
+              th_num = std::min(MAX_PARALLEL_OPS, std::min(BaseState::threads_, num_parallel_ops));
+            }
+            if (th_num > 1) {
+              // Enable nested LAPACK to improve SVD
+              save = omp_get_max_active_levels();
+              omp_set_max_active_levels(5);
+            }
+            #pragma omp parallel for if (th_num > 1) schedule(dynamic, 1) num_threads(th_num)
+            for (auto it_p = first_p_op; it_p <= last_p_op; ++it_p) {
+              apply_op(*it_p, result, rng, final_ops and (it_p == last));
+            }
+
+            if (th_num > 1) {  // Restore for next operations
+              omp_set_max_active_levels(save);
+            }
+
+            it = last_p_op;
+          } else {
+            apply_op(*it, result, rng, final_ops && (it + 1 == last));
+         }
+        } else {
+          apply_op(*it, result, rng, final_ops && (it + 1 == last));
+        }
+      }
+    }
+  }
+};
 
 //=========================================================================
 // Implementation: apply operations

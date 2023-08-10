@@ -16,6 +16,7 @@ Qiskit Aer qasm simulator backend.
 import copy
 import datetime
 import logging
+import os
 import time
 import uuid
 import warnings
@@ -237,6 +238,16 @@ class AerBackend(Backend, ABC):
     def _run_circuits(self, circuits, parameter_binds, **run_options):
         """Run circuits by generating native circuits."""
         # Submit job
+        if "matrix_product_state" in self.name():
+            if type(circuits) != list and getattr(circuits, "metadata", None):
+                parallel_ops = circuits.metadata.get("parallel_ops")
+            elif len(circuits) == 1 and getattr(circuits[0], "metadata", None):
+                parallel_ops = circuits[0].metadata.get("parallel_ops")
+            else:
+                parallel_ops = False
+            if parallel_ops:
+                os.environ['QISKIT_MPS_PARALLEL_OPS'] = "true"
+
         job_id = str(uuid.uuid4())
         aer_job = AerJob(
             self,
@@ -253,6 +264,16 @@ class AerBackend(Backend, ABC):
     # pylint: disable=arguments-differ
     def _run_qobj(self, circuits, validate=False, parameter_binds=None, **run_options):
         """Run circuits by assembling qobj."""
+        if "matrix_product_state" in self.name():
+            if type(circuits) != list and getattr(circuits, "metadata", None):
+                parallel_ops = circuits.metadata.get("parallel_ops")
+            elif len(circuits) == 1 and getattr(circuits[0], "metadata", None):
+                parallel_ops = circuits[0].metadata.get("parallel_ops")
+            else:
+                parallel_ops = False
+            if parallel_ops:
+                os.environ['QISKIT_MPS_PARALLEL_OPS'] = "true"
+
         qobj = self._assemble(circuits, parameter_binds=parameter_binds, **run_options)
 
         # Optional validation
@@ -377,6 +398,7 @@ class AerBackend(Backend, ABC):
 
         # Run simulation
         output = self._execute_qobj(qobj)
+        os.unsetenv('QISKIT_MPS_PARALLEL_OPS')
 
         # Recover metadata
         metadata_index = 0
@@ -451,6 +473,7 @@ class AerBackend(Backend, ABC):
             for aer_circuit, circuit in zip(aer_circuits, circuits)
         }
         output = self._execute_circuits(aer_circuits, noise_model, config)
+        os.unsetenv('QISKIT_MPS_PARALLEL_OPS')
 
         # Validate output
         if not isinstance(output, dict):

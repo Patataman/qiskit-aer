@@ -294,3 +294,136 @@ class TestMeasure(SimulatorTestCase):
                 self.assertTrue(getattr(res_mps, "success", "True"))
                 res_sv = backend_statevector.run(circuit, shots=shots).result().get_counts()
                 self.assertDictAlmostEqual(res_mps, res_sv, delta=0.1 * shots)
+
+    def test_mps_parallel_ops_with_gate_circuits(self):
+        """Test MPS parallel ops works properly"""
+        from qiskit.circuit.library import QFT  # bad practice but for clarity
+
+        backend = self.backend(method="matrix_product_state")
+        shots = 1000
+        n = 30
+
+        qc1 = QuantumCircuit(n)
+        qiskit_qft = QFT(n).to_gate()
+        qc1.append(qiskit_qft, range(n))
+        qc1.measure_all()
+        t_qc1 = transpile(qc1, backend, seed_transpiler=23)
+
+        qc2 = QuantumCircuit(n, metadata={"skip_key_order": True, "parallel_ops": True})
+        qiskit_qft = QFT(n).to_gate()
+        qc2.append(qiskit_qft, range(n))
+        qc2.measure_all()
+        t_qc2 = transpile(qc2, backend, seed_transpiler=23)
+
+        result1 = backend.run(t_qc1, shots=shots).result()
+        self.assertTrue(getattr(result1, 'success', 'True'))
+
+        result2 = backend.run(t_qc2, shots=shots).result()
+        self.assertTrue(getattr(result2, 'success', 'True'))
+
+        # Result should be the same because they should be the same exact circuit
+        self.assertDictEqual(result1.get_counts(t_qc1), result2.get_counts(t_qc2))
+
+    def test_skip_lexicographic_order_results(self):
+        """ Check that the result is the same when skipping lexicographic order"""
+        backend = self.backend(method="matrix_product_state")
+        shots = 1000
+        n = 12
+
+        for checks in range(10):  # <-- Never trust parallel code
+            qc1 = QuantumCircuit(n)
+            qc2 = QuantumCircuit(n, metadata={"skip_key_order": True})
+
+            for times in range(4):
+                if times % 2 == 0:
+                    for i in range(0, n, 2):
+                        qc1.unitary(random_unitary(4, seed=23), [i, i+1])
+                        qc2.unitary(random_unitary(4, seed=23), [i, i+1])
+                else:
+                    for i in range(1,n-1,2):
+                        qc1.unitary(random_unitary(4, seed=11), [i, i+1])
+                        qc2.unitary(random_unitary(4, seed=11), [i, i+1])
+
+            qc1.measure_all()
+            qc2.measure_all()
+
+            qc1 = transpile(qc1, backend, optimization_level=1)
+            qc2 = transpile(qc2, backend, optimization_level=1)
+
+            result1 = backend.run(qc1, shots=shots).result()
+            result2 = backend.run(qc2, shots=shots).result()
+
+            self.assertDictEqual(result1.get_counts(qc1), result2.get_counts(qc2))
+
+    def test_mps_order_and_parallel(self):
+        """ Check that the result is the same when
+            skiping the lexicographical ordering
+        """
+        backend = self.backend(method="matrix_product_state")
+        shots = 1000
+        n = 12
+
+        for checks in range(10):  # <-- Never trust parallel execution
+            qc1 = QuantumCircuit(n)
+            qc2 = QuantumCircuit(n, metadata={"parallel_ops": True})
+
+            for times in range(4):
+                if times % 2 == 0:
+                    for i in range(0, n, 2):
+                        qc1.unitary(random_unitary(4, seed=23), [i, i+1])
+                        qc2.unitary(random_unitary(4, seed=23), [i, i+1])
+                else:
+                    for i in range(1,n-1,2):
+                        qc1.unitary(random_unitary(4, seed=11), [i, i+1])
+                        qc2.unitary(random_unitary(4, seed=11), [i, i+1])
+
+            qc1.measure_all()
+            qc2.measure_all()
+
+            qc1 = transpile(qc1, backend, optimization_level=1)
+            qc2 = transpile(qc2, backend, optimization_level=1)
+
+            result1 = backend.run(qc1, shots=shots).result()
+            result2 = backend.run(qc2, shots=shots).result()
+
+            self.assertTrue("matrix_product_state_parallel_ops" not in result1._get_experiment().metadata)
+            self.assertTrue("matrix_product_state_parallel_ops" in result2._get_experiment().metadata)
+
+            self.assertDictEqual(result1.get_counts(qc1), result2.get_counts(qc2))
+
+    def test_mps_noorder_and_parallel(self):
+        """ Check that the result is the same when
+            skiping the lexicographical ordering
+        """
+        backend = self.backend(method="matrix_product_state")
+        shots = 1000
+        n = 12
+
+        for checks in range(10):  # <-- Never trust parallel execution
+            qc1 = QuantumCircuit(n)
+            qc2 = QuantumCircuit(n, metadata={"skip_key_order": True, "parallel_ops": True})
+
+            for times in range(4):
+                if times % 2 == 0:
+                    for i in range(0, n, 2):
+                        qc1.unitary(random_unitary(4, seed=23), [i, i+1])
+                        qc2.unitary(random_unitary(4, seed=23), [i, i+1])
+                else:
+                    for i in range(1,n-1,2):
+                        qc1.unitary(random_unitary(4, seed=11), [i, i+1])
+                        qc2.unitary(random_unitary(4, seed=11), [i, i+1])
+
+            qc1.measure_all()
+            qc2.measure_all()
+
+            qc1 = transpile(qc1, backend, optimization_level=1)
+            qc2 = transpile(qc2, backend, optimization_level=1)
+
+            result1 = backend.run(qc1, shots=shots).result()
+            result2 = backend.run(qc2, shots=shots).result()
+
+            self.assertTrue("matrix_product_state_parallel_ops" not in result1._get_experiment().metadata)
+            self.assertTrue("matrix_product_state_parallel_ops" in result2._get_experiment().metadata)
+
+            self.assertDictEqual(result1.get_counts(qc1), result2.get_counts(qc2))
+
